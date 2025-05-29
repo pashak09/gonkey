@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -284,10 +283,10 @@ func (f *LoaderPostgres) loadTable(ctx *loadContext, tx *sql.Tx, t tableName, ro
 		return err
 	}
 	if f.debug {
-		fmt.Println("Issuing SQL:", query)
+		fmt.Printf("Issuing SQL: %s, args %s\n", query.Query, query.Args)
 	}
 	// issuing query
-	insertedRows, err := tx.Query(query)
+	insertedRows, err := tx.Query(query.Query, query.Args...)
 	if err != nil {
 		return err
 	}
@@ -371,9 +370,14 @@ END$$
 	return err
 }
 
+type insertQuery struct {
+	Query string
+	Args  []any
+}
+
 // buildInsertQuery builds SQL query for data insertion
 // based on values read from yaml
-func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows table) (string, error) {
+func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows table) (insertQuery, error) {
 	// first pass, collecting all the fields
 	var fields []string
 	fieldPresence := make(map[string]bool)
@@ -388,25 +392,38 @@ func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows ta
 			}
 		}
 	}
-	sort.Strings(fields)
+
+	// Prepare value placeholders
+	var placeholders []string
+	var args []any
+	var argIndex = 0
+
 	// second pass, collecting values
-	dbValues := make([]string, len(rows))
 	for i, row := range rows {
-		dbValuesRow := make([]string, len(fields))
+		rowPlaceholders := make([]string, len(fields))
+
 		for k, name := range fields {
+			argIndex++
+
 			value, present := row[name]
 			if !present {
-				dbValuesRow[k] = "default" // default is a PostgreSQL keyword
+				rowPlaceholders[k] = "default"
 
 				continue
 			}
 			// resolve references
 			if stringValue, ok := value.(string); ok {
 				if stringValue != "" && stringValue[0] == '$' {
-					var err error
-					dbValuesRow[k], err = f.resolveExpression(stringValue, ctx)
+					expr, err := f.resolveExpression(stringValue, ctx)
 					if err != nil {
-						return "", err
+						return insertQuery{}, err
+					}
+
+					rowPlaceholders[k] = expr
+
+					if expr == stringValue { //expr is not resolved, uses original value
+						rowPlaceholders[k] = fmt.Sprintf("$%d", argIndex)
+						args = append(args, expr)
 					}
 
 					continue
@@ -414,20 +431,27 @@ func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows ta
 			}
 			dbValue, err := toDbValue(value)
 			if err != nil {
-				return "", fmt.Errorf("unable to process %s value (row %d of %s): %s", name, i, t.getFullName(), err.Error())
+				return insertQuery{}, fmt.Errorf("unable to process %s value (row %d of %s): %s", name, i, t.getFullName(), err.Error())
 			}
-			dbValuesRow[k] = dbValue
+
+			rowPlaceholders[k] = fmt.Sprintf("$%d", argIndex)
+			args = append(args, dbValue)
 		}
-		dbValues[i] = "(" + strings.Join(dbValuesRow, ", ") + ")"
-	}
-	// quote fields
-	for i, field := range fields {
-		fields[i] = "\"" + field + "\""
+
+		placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(rowPlaceholders, ", ")))
 	}
 
-	query := "INSERT INTO %s AS row (%s) VALUES %s RETURNING row_to_json(row)"
+	query := fmt.Sprintf(
+		`INSERT INTO %s AS row (%s) VALUES %s RETURNING row_to_json(row)`,
+		t.getFullName(),
+		strings.Join(fields, ", "),
+		strings.Join(placeholders, ", "),
+	)
 
-	return fmt.Sprintf(query, t.getFullName(), strings.Join(fields, ", "), strings.Join(dbValues, ", ")), nil
+	return insertQuery{
+		Query: query,
+		Args:  args,
+	}, nil
 }
 
 // resolveExpression converts expressions starting with dollar sign into a value
@@ -435,7 +459,7 @@ func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows ta
 // - $eval()               - executes an SQL expression, e.g. $eval(CURRENT_DATE)
 // - $recordName.fieldName - using value of previously inserted named record
 func (f *LoaderPostgres) resolveExpression(expr string, ctx *loadContext) (string, error) {
-	if expr[:5] == "$eval" {
+	if strings.HasPrefix(expr, "$eval") {
 		re := regexp.MustCompile(`^\$eval\((.+)\)$`)
 		if matches := re.FindStringSubmatch(expr); matches != nil {
 			return "(" + matches[1] + ")", nil
@@ -446,7 +470,7 @@ func (f *LoaderPostgres) resolveExpression(expr string, ctx *loadContext) (strin
 
 	value, err := f.resolveFieldReference(ctx.refsInserted, expr)
 	if err != nil {
-		return "", nil
+		return expr, nil // if no reference found, return original string
 	}
 
 	return toDbValue(value)
@@ -509,7 +533,7 @@ func toDbValue(value interface{}) (string, error) {
 		return "NULL", nil
 	}
 	if value, ok := value.(string); ok {
-		return quoteLiteral(value), nil
+		return value, nil
 	}
 	if value, ok := value.(int); ok {
 		return strconv.Itoa(value), nil
@@ -527,18 +551,5 @@ func toDbValue(value interface{}) (string, error) {
 		return "", err
 	}
 
-	return quoteLiteral(string(encoded)), nil
-}
-
-// quoteLiteral properly escapes string to be safely
-// passed as a value in SQL query
-func quoteLiteral(s string) string {
-	var p string
-	if strings.Contains(s, `\`) {
-		p = "E"
-	}
-	s = strings.ReplaceAll(s, `'`, `''`)
-	s = strings.ReplaceAll(s, `\`, `\\`)
-
-	return p + `'` + s + `'`
+	return string(encoded), nil
 }

@@ -448,7 +448,7 @@ func (l *LoaderMysql) rowInsertValue(ctx *loadContext, val interface{}) (string,
 // - $eval()               - executes an SQL expression, e.g. $eval(CURRENT_DATE)
 // - $recordName.fieldName - using value of previously inserted named record
 func (l *LoaderMysql) resolveExpression(expr string, ctx *loadContext) (string, error) {
-	if expr[:5] == "$eval" {
+	if strings.HasPrefix(expr, "$eval") {
 		re := regexp.MustCompile(`^\$eval\((.+)\)$`)
 		if matches := re.FindStringSubmatch(expr); matches != nil {
 			return "(" + matches[1] + ")", nil
@@ -458,7 +458,7 @@ func (l *LoaderMysql) resolveExpression(expr string, ctx *loadContext) (string, 
 	}
 	value, err := l.resolveFieldReference(ctx.refsInserted, expr)
 	if err != nil {
-		return "", err
+		return expr, err // if no reference found, return original string
 	}
 
 	return toDbValue(value)
