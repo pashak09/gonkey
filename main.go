@@ -16,6 +16,7 @@ import (
 
 	"github.com/lamoda/gonkey/checker/response_body"
 	"github.com/lamoda/gonkey/checker/response_db"
+	"github.com/lamoda/gonkey/checker/response_header"
 	"github.com/lamoda/gonkey/fixtures"
 	redisLoader "github.com/lamoda/gonkey/fixtures/redis"
 	"github.com/lamoda/gonkey/output/allure_report"
@@ -151,6 +152,7 @@ func validateConfig(cfg *config) {
 
 func addCheckers(r *runner.Runner, db *sql.DB) {
 	r.AddCheckers(response_body.NewChecker())
+	r.AddCheckers(response_header.NewChecker())
 	if db != nil {
 		r.AddCheckers(response_db.NewChecker(db))
 	}
