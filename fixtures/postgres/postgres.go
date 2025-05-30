@@ -441,6 +441,11 @@ func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows ta
 		placeholders = append(placeholders, fmt.Sprintf("(%s)", strings.Join(rowPlaceholders, ", ")))
 	}
 
+	// quote fields
+	for i, field := range fields {
+		fields[i] = "\"" + field + "\""
+	}
+
 	query := fmt.Sprintf(
 		`INSERT INTO %s AS row (%s) VALUES %s RETURNING row_to_json(row)`,
 		t.getFullName(),
