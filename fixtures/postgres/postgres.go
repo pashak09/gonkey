@@ -454,7 +454,10 @@ func (f *LoaderPostgres) buildInsertQuery(ctx *loadContext, t tableName, rows ta
 			}
 			// resolve references
 			if stringValue, ok := value.(string); ok {
-				if stringValue != "" && stringValue[0] == '$' {
+				switch {
+				case strings.HasPrefix(stringValue, `\$`):
+					value = stringValue[1:]
+				case stringValue != "" && stringValue[0] == '$':
 					var err error
 					dbValuesRow[k], err = f.resolveExpression(stringValue, ctx)
 					if err != nil {
